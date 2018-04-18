@@ -3,3 +3,4 @@ WinDebugger/WinDebugger.pro
 WinDebugger/WinDebugger.pro.user
 DebuggedProcess/DebuggedProcess.pro.user
 DebuggedProcess/DebuggedProcess.pro
+WinDebugger/main.cpp
