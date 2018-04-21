@@ -3,49 +3,93 @@
 #include <windows.h>
 #include <tchar.h>
 #include <thread>
+#include <mutex>
 
 class MyDebuggerCore {
 public:
-	enum class DebugAction {
+	//Класс перечислений для выбора действия
+	enum class DebugAction : int {
+		//Продолжить отладку
 		RESUME,
+		//Приостановить отладку
 		PAUSE,
+		//Остановить (завершить) отладку
 		STOP
 	};
-	enum DebuggerError {
-		CANNOT_CREATE_DEBUGGEE_PROCESS = 1,
-		CANNOT_LAUNCH_DEBUG_CYCLE_THREAD
+	//Класс перечислений ошибок ОТЛАДЧИКА
+	enum class DebuggerError : int {
+		NO_ERR,
+		//Не удаётся запустить отлаживаемый процесс
+		CANNOT_CREATE_DEBUGGEE_PROCESS,
+		//Не удаётся поток основного отладочного цикла
+		CANNOT_LAUNCH_DEBUG_CYCLE_THREAD,
+		//Не удаётся приостановит отлаживаемый процесс
+		CANNOT_PAUSE_DEBUGGEE_PROCESS
 	};
 
-private:
+public:
+	//Машинный код точки останова (прерывание __asm int 3)
 	static const BYTE BP_INSTRUCTION = 0xCC;
+
+	//Структуры, хранящие информацию о отлаживаемом процессе
 	PROCESS_INFORMATION piDebuggee;
 	STARTUPINFO siDebuggee;
+	//Путь и аргументы командной строки для отлаживаемого процесса
 	TCHAR * debuggeePath;
 	TCHAR * debuggeeCmdParams;
+	//Стартовый адрес отлаживаемого процесса
 	LPVOID pStartAddress;
+	//Флаг для отличия исключений, вызванных пользовательскими точками останова,
+	//от исключений, вызванных методом PauseDebugging()
+	BOOL bDebugPaused;
 
+	//Поток, выполняющий основной отладочный цикл
 	std::thread * MainDebugCycleThread;
+	//Мьютекс для синхронного доступа к интерфейсу
+	std::mutex dcMutex;
 
+	//Принудительное завершение отлаживаемого процесса
 	void terminateDebuggee();
 
 	//int SetBreakPoint(/***/);
 	//int ClearBreakPoint(/***/);
+
+	//Удалть текущую точку останова
+	int ClearCurrentBreakPoint();
+
 	//int StopDebugging();
-	//int PauseDebugging();
+
+	//Приостановить отладку
+	int PauseDebugging();
+
 	//int ResumeDebugging();
 
-	static int DebugCycle(MyDebuggerCore *debuggingCore);
+	//Обработка точки останова (локльная)
+	int BreakPointHandler(DEBUG_EVENT & stDE);
+
+	//Основной отладочный цикл
+	//Параметры:
+	//debuggingCore - указатель на ядро отладчика
+	static int DebugCycle(MyDebuggerCore * debuggingCore);
 
 public:
+	//Запуск отладчика
+	//Параметры:
+	//debuggeePath - путь к отлаживаемой программе
+	//cmdLineParams - аргументы командной строки для отлаживаемого процесса
 	int StartDebugging(TCHAR * debuggeePath, TCHAR * cmdLineParams);
+	//Потльзовательское действие
+	//Параметры:
+	//action - выбор действия
 	int DebuggingAction(DebugAction && action);
 	int DebuggingAction(DebugAction & action);
-	std::thread * getThread() {
-		return MainDebugCycleThread;
-	}
+
+	std::thread * getThread();
 
 protected:
+	//Виртуальные методы для вывода информации, определяемые в интерфейсе
 	virtual DWORD ExceptionDebugEventHandler(EXCEPTION_DEBUG_INFO & stInfo, DWORD dwProcessId, DWORD dwThreadId) = 0;
+	virtual DWORD ExceptionBreakPointDebugEventHandler(EXCEPTION_DEBUG_INFO & stInfo, DWORD dwProcessId, DWORD dwThreadId) = 0;
 	virtual DWORD CreateThreadDebugEventHandler(CREATE_THREAD_DEBUG_INFO & stInfo, DWORD dwProcessId, DWORD dwThreadId) = 0;
 	virtual DWORD CreateProcessDebugEventHandler(CREATE_PROCESS_DEBUG_INFO & stInfo, DWORD dwProcessId, DWORD dwThreadId) = 0;
 	virtual DWORD ExitThreadDebugEventHandler(EXIT_THREAD_DEBUG_INFO & stInfo, DWORD dwProcessId, DWORD dwThreadId) = 0;

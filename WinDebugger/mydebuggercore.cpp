@@ -1,4 +1,5 @@
 #include "mydebuggercore.hpp"
+#include <iostream>
 
 void MyDebuggerCore::terminateDebuggee() {
 	TerminateProcess(piDebuggee.hProcess, 1);
@@ -34,7 +35,7 @@ int MyDebuggerCore::DebugCycle(MyDebuggerCore * debuggingCore) {
 		if(bRet == TRUE) {
 			switch(stDE.dwDebugEventCode) {
 
-			case EXCEPTION_DEBUG_EVENT:
+			case EXCEPTION_DEBUG_EVENT: {
 				switch(stDE.u.Exception.ExceptionRecord.ExceptionCode) {
 				case EXCEPTION_BREAKPOINT:
 					if(bSeenInitBP == FALSE) {
@@ -42,61 +43,104 @@ int MyDebuggerCore::DebugCycle(MyDebuggerCore * debuggingCore) {
 						dwContinueStatus = DBG_CONTINUE;
 					}
 					else {
-						dwContinueStatus = DBG_EXCEPTION_NOT_HANDLED;
+						debuggingCore->BreakPointHandler(stDE);
+						dwContinueStatus = DBG_CONTINUE;
 					}
+					break;
 				default:
 					dwContinueStatus = DBG_EXCEPTION_NOT_HANDLED;
 				}
+				std::lock_guard<std::mutex>(debuggingCore->dcMutex);
 				debuggingCore->ExceptionDebugEventHandler(stDE.u.Exception, stDE.dwProcessId, stDE.dwThreadId);
 				break;
+			}
 
-			case CREATE_THREAD_DEBUG_EVENT:
+			case CREATE_THREAD_DEBUG_EVENT: {
+				std::lock_guard<std::mutex>(debuggingCore->dcMutex);
 				debuggingCore->CreateThreadDebugEventHandler(stDE.u.CreateThread, stDE.dwProcessId, stDE.dwThreadId);
 				dwContinueStatus = DBG_CONTINUE;
 				break;
 
 			case CREATE_PROCESS_DEBUG_EVENT:
-				if(bSeenInitAddress == FALSE) {
-					debuggingCore->pStartAddress = (LPVOID) stDE.u.CreateProcessInfo.lpStartAddress;
-					bSeenInitAddress = TRUE;
+					if(bSeenInitAddress == FALSE) {
+						std::lock_guard<std::mutex>(debuggingCore->dcMutex);
+						debuggingCore->pStartAddress = (LPVOID) stDE.u.CreateProcessInfo.lpStartAddress;
+						CloseHandle(stDE.u.CreateProcessInfo.hFile);
+						bSeenInitAddress = TRUE;
+					}
+					std::lock_guard<std::mutex>(debuggingCore->dcMutex);
+					debuggingCore->CreateProcessDebugEventHandler(stDE.u.CreateProcessInfo, stDE.dwProcessId, stDE.dwThreadId);
+					dwContinueStatus = DBG_CONTINUE;
+					break;
 				}
-				debuggingCore->CreateProcessDebugEventHandler(stDE.u.CreateProcessInfo, stDE.dwProcessId, stDE.dwThreadId);
-				dwContinueStatus = DBG_CONTINUE;
-				break;
 
-			case EXIT_THREAD_DEBUG_EVENT:
+			case EXIT_THREAD_DEBUG_EVENT: {
+				std::lock_guard<std::mutex>(debuggingCore->dcMutex);
 				debuggingCore->ExitThreadDebugEventHandler(stDE.u.ExitThread, stDE.dwProcessId, stDE.dwThreadId);
 				dwContinueStatus = DBG_CONTINUE;
 				break;
+			}
 
-			case EXIT_PROCESS_DEBUG_EVENT:
+			case EXIT_PROCESS_DEBUG_EVENT: {
+				std::lock_guard<std::mutex>(debuggingCore->dcMutex);
 				debuggingCore->ExitProcessDebugEventHandler(stDE.u.ExitProcess, stDE.dwProcessId, stDE.dwThreadId);
 				dwContinueStatus = DBG_CONTINUE;
 				break;
+			}
 
-			case LOAD_DLL_DEBUG_EVENT:
+			case LOAD_DLL_DEBUG_EVENT: {
+				std::lock_guard<std::mutex>(debuggingCore->dcMutex);
 				debuggingCore->LoadDllDebugEventHandler(stDE.u.LoadDll, stDE.dwProcessId, stDE.dwThreadId);
 				dwContinueStatus = DBG_CONTINUE;
 				break;
+			}
 
-			case UNLOAD_DLL_DEBUG_EVENT:
+			case UNLOAD_DLL_DEBUG_EVENT: {
+				std::lock_guard<std::mutex>(debuggingCore->dcMutex);
 				debuggingCore->UnloadDllDebugEventHandler(stDE.u.UnloadDll, stDE.dwProcessId, stDE.dwThreadId);
 				dwContinueStatus = DBG_CONTINUE;
 				break;
+			}
 
-			case OUTPUT_DEBUG_STRING_EVENT:
+			case OUTPUT_DEBUG_STRING_EVENT: {
+				std::lock_guard<std::mutex>(debuggingCore->dcMutex);
 				debuggingCore->OutputDebugStringEventHandler(stDE.u.DebugString, stDE.dwProcessId, stDE.dwThreadId);
 				dwContinueStatus = DBG_CONTINUE;
 				break;
+			}
 
-			case RIP_EVENT:
+			case RIP_EVENT: {
+				std::lock_guard<std::mutex>(debuggingCore->dcMutex);
 				debuggingCore->RipEventHandler(stDE.u.RipInfo, stDE.dwProcessId, stDE.dwThreadId);
 				dwContinueStatus = DBG_CONTINUE;
 				break;
 			}
+			}
 			ContinueDebugEvent(stDE.dwProcessId, stDE.dwThreadId, dwContinueStatus);
 		}
 	}
+	return 0;
+}
+
+int MyDebuggerCore::PauseDebugging() {
+	if(DebugBreakProcess(piDebuggee.hProcess) == FALSE) {
+		DebuggerErrorHandler(DebuggerError::CANNOT_PAUSE_DEBUGGEE_PROCESS);
+		return (int) DebuggerError::CANNOT_PAUSE_DEBUGGEE_PROCESS;
+	}
+
+	bDebugPaused = TRUE;
+	return 0;
+}
+
+int MyDebuggerCore::BreakPointHandler(DEBUG_EVENT & stDE) {
+	ExceptionBreakPointDebugEventHandler(stDE.u.Exception, stDE.dwProcessId, stDE.dwThreadId);
+	//WaitUntilResume
+	if(bDebugPaused == FALSE)
+		ClearCurrentBreakPoint();
+	return 0;
+}
+
+int MyDebuggerCore::ClearCurrentBreakPoint() {
 	return 0;
 }
 
@@ -110,11 +154,18 @@ int MyDebuggerCore::StartDebugging(TCHAR * debuggeePath, TCHAR * debuggeeCmdPara
 
 	siDebuggee.cb = sizeof(STARTUPINFO);
 
+	bDebugPaused = FALSE;
+
 	try {
 		MainDebugCycleThread = new std::thread(&MyDebuggerCore::DebugCycle, this);
 	}
 	catch(std::system_error) {
 		DebuggerErrorHandler(DebuggerError::CANNOT_LAUNCH_DEBUG_CYCLE_THREAD);
+		return (int) DebuggerError::CANNOT_LAUNCH_DEBUG_CYCLE_THREAD;
 	}
 	return 0;
+}
+
+std::thread * MyDebuggerCore::getThread() {
+	return MainDebugCycleThread;
 }
