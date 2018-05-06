@@ -4,6 +4,7 @@
 #include <tchar.h>
 #include <thread>
 #include <mutex>
+#include <vector>
 
 class MyDebuggerCore {
 public:
@@ -20,11 +21,21 @@ public:
 	enum class DebuggerError : int {
 		NO_ERR,
 		//Не удаётся запустить отлаживаемый процесс
-		CANNOT_CREATE_DEBUGGEE_PROCESS,
+		ERR_CANNOT_CREATE_DEBUGGEE_PROCESS,
 		//Не удаётся поток основного отладочного цикла
-		CANNOT_LAUNCH_DEBUG_CYCLE_THREAD,
+		ERR_CANNOT_LAUNCH_DEBUG_CYCLE_THREAD,
 		//Не удаётся приостановит отлаживаемый процесс
-		CANNOT_PAUSE_DEBUGGEE_PROCESS
+		ERR_CANNOT_PAUSE_DEBUGGEE_PROCESS,
+		//Не удаётся продолжитьт отладку
+		ERR_CANNOT_RESUME_DEBUGEE_PROCESS,
+		//При попытке продолжить отладку, если отадка не остановлена
+		ERR_DEBUGGEE_ALREADY_ACTIVE,
+		//Не удаётся прочитать память процесса
+		ERR_CANNOT_READ_PROCESS_MEMORY,
+		//Не удаётся установить точку останова
+		ERR_CANNOT_SET_BREAK_POINT,
+		//Не удаётся найти такую точку останова
+		ERR_CANNOT_FIND_BREAK_POINT
 	};
 
 public:
@@ -37,11 +48,20 @@ public:
 	//Путь и аргументы командной строки для отлаживаемого процесса
 	TCHAR * debuggeePath;
 	TCHAR * debuggeeCmdParams;
-	//Стартовый адрес отлаживаемого процесса
-	LPVOID pStartAddress;
 	//Флаг для отличия исключений, вызванных пользовательскими точками останова,
 	//от исключений, вызванных методом PauseDebugging()
 	BOOL bDebugPaused;
+	//Останавливает отладочный цикл, когда попадает на точку останова
+	HANDLE hBPEvent;
+
+	std::vector<std::pair<
+					DWORD/*Адрес точки*/,
+					BYTE/*Оригинальная инструкция по этому адресу*/
+				>> breakPoints;
+	std::vector<std::pair<
+					HANDLE/*Описатель потока*/,
+					DWORD/*ID потока*/
+				>> debugeeThreads;
 
 	//Поток, выполняющий основной отладочный цикл
 	std::thread * MainDebugCycleThread;
@@ -51,21 +71,21 @@ public:
 	//Принудительное завершение отлаживаемого процесса
 	void terminateDebuggee();
 
-	//int SetBreakPoint(/***/);
-	//int ClearBreakPoint(/***/);
-
+	int SetBreakPoint(DWORD dwBPAddress);
+	int ClearBreakPoint(DWORD dwBPAddress);
+	//Обработка точки останова (локльная)
+	void BreakPointHandler(DEBUG_EVENT & stDE);
 	//Удалть текущую точку останова
-	int ClearCurrentBreakPoint();
+	void ClearCurrentBreakPoint(DWORD dwBPAddress, DWORD dwThreadId);
 
-	//int StopDebugging();
+
+	void StopDebugging();
 
 	//Приостановить отладку
 	int PauseDebugging();
 
-	//int ResumeDebugging();
+	int ResumeDebugging();
 
-	//Обработка точки останова (локльная)
-	int BreakPointHandler(DEBUG_EVENT & stDE);
 
 	//Основной отладочный цикл
 	//Параметры:
