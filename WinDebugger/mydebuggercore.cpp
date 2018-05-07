@@ -1,7 +1,9 @@
 #include "mydebuggercore.hpp"
 #include "getfilenamefromhandle.hpp"
 #include <iostream>
+#include <filesystem>
 #include <DbgHelp.h>
+#include <QString>
 
 void MyDebuggerCore::terminateDebuggee() {
 	TerminateProcess(piDebuggee.hProcess, 1);
@@ -72,12 +74,63 @@ int MyDebuggerCore::DebugCycle(MyDebuggerCore * debuggingCore) {
 					std::cout << "SymInitialize error : " << std::hex << GetLastError() << std::endl;
 				}
 				else {
-					DWORD64 dwBase = SymLoadModule64(stDE.u.CreateProcessInfo.hProcess, stDE.u.CreateProcessInfo.hFile,(PCSTR) stDE.u.CreateProcessInfo.lpImageName, NULL, (DWORD64) stDE.u.CreateProcessInfo.lpBaseOfImage, stDE.u.CreateProcessInfo.nDebugInfoSize);
+					char path[MAX_PATH];
+					memset(path, 0, MAX_PATH);
+					wcstombs(path, debuggingCore->debuggeePath, wcslen(debuggingCore->debuggeePath));
+					DWORD64 dwBase = SymLoadModule64(stDE.u.CreateProcessInfo.hProcess,
+													 NULL,
+													 path,
+													 NULL,
+													 (DWORD64)stDE.u.CreateProcessInfo.lpBaseOfImage,
+													 stDE.u.CreateProcessInfo.nDebugInfoSize);
 					if(dwBase == FALSE) {
-						std::cout << "SymLoadModule error : " << std::hex << GetLastError() << std::endl;
+						std::cout << "SymLoadModule64 error : " << GetLastError() << std::endl;
 					}
 					else {
 						std::cout << std::hex << dwBase << std::endl;
+						IMAGEHLP_MODULE64 module_info;
+						module_info.SizeOfStruct = sizeof(module_info);
+						BOOL bSuccess = SymGetModuleInfo64(stDE.u.CreateProcessInfo.hProcess, dwBase, &module_info);
+
+						// Check and notify
+						if (bSuccess && module_info.SymType == SymPdb)
+						{
+							std::cout << "Symbols Loaded." << std::endl;
+							std::vector<SOURCEFILE> sourceFiles;
+							SymEnumSourceFiles(stDE.u.CreateProcessInfo.hProcess, dwBase,
+											   "*.cpp", [](PSOURCEFILE pSourceFile, PVOID args_void) -> BOOL {
+								std::vector<SOURCEFILE> * vector = reinterpret_cast<std::vector<SOURCEFILE> *>(args_void);
+								if(std::experimental::filesystem::exists(std::experimental::filesystem::path(pSourceFile->FileName))) {
+									SOURCEFILE temp;
+									temp.ModBase = pSourceFile->ModBase;
+									int len = strlen(pSourceFile->FileName);
+									temp.FileName = new char[len+1]();
+									memcpy(temp.FileName, pSourceFile->FileName, len);
+									vector->push_back(temp);
+									return TRUE;
+								}
+								return FALSE;
+							}, &sourceFiles);
+							for(SOURCEFILE p : sourceFiles) {
+									std::cout << p.FileName << std::endl;
+							}
+							std::vector<SRCCODEINFO> linesInfo;
+							SymEnumLines(stDE.u.CreateProcessInfo.hProcess, dwBase, NULL,
+										 sourceFiles.begin()->FileName,
+										 [](PSRCCODEINFO LineInfo, PVOID args_void) -> BOOL {
+								std::vector<SRCCODEINFO> * vector = reinterpret_cast<std::vector<SRCCODEINFO> *>(args_void);
+								SRCCODEINFO tmp;
+								memcpy(&tmp, LineInfo, LineInfo->SizeOfStruct);
+								vector->push_back(tmp);
+								return TRUE;
+							}, &linesInfo);
+							std::cout << linesInfo.size() << std::endl;
+						}
+
+						else
+						{
+							std::cout << "No debugging symbols found." << std::endl;
+						}
 					}
 				}
 
@@ -182,7 +235,6 @@ int MyDebuggerCore::ClearBreakPoint(DWORD dwBPAddress) {
 	}
 	return (int) DebuggerError::ERR_CANNOT_FIND_BREAK_POINT;
 }
-
 void MyDebuggerCore::BreakPointHandler(DEBUG_EVENT & stDE) {
 	ExceptionBreakPointDebugEventHandler(stDE.u.Exception, stDE.dwProcessId, stDE.dwThreadId);
 	WaitForSingleObject(hBPEvent, INFINITE);
@@ -190,7 +242,6 @@ void MyDebuggerCore::BreakPointHandler(DEBUG_EVENT & stDE) {
 		ClearCurrentBreakPoint((DWORD)stDE.u.Exception.ExceptionRecord.ExceptionAddress, stDE.dwThreadId);
 	bDebugPaused = FALSE;
 }
-
 void MyDebuggerCore::ClearCurrentBreakPoint(DWORD dwBPAddress, DWORD dwThreadId) {
 	if(ClearBreakPoint(dwBPAddress) == 0) {
 		HANDLE hThread;
@@ -208,6 +259,10 @@ void MyDebuggerCore::ClearCurrentBreakPoint(DWORD dwBPAddress, DWORD dwThreadId)
 	}
 }
 
+void MyDebuggerCore::StopDebugging() {
+	ResumeDebugging();
+	terminateDebuggee();
+}
 int MyDebuggerCore::PauseDebugging() {
 	if(DebugBreakProcess(piDebuggee.hProcess) == FALSE) {
 		DebuggerErrorHandler(DebuggerError::ERR_CANNOT_PAUSE_DEBUGGEE_PROCESS);
@@ -217,7 +272,6 @@ int MyDebuggerCore::PauseDebugging() {
 	bDebugPaused = TRUE;
 	return 0;
 }
-
 int MyDebuggerCore::ResumeDebugging() {
 	if(WaitForSingleObject(hBPEvent, 0) != WAIT_OBJECT_0) {
 		if(SetEvent(hBPEvent) == TRUE)
@@ -226,10 +280,8 @@ int MyDebuggerCore::ResumeDebugging() {
 	}
 	return (int) DebuggerError::ERR_CANNOT_FIND_BREAK_POINT;
 }
-
-void MyDebuggerCore::StopDebugging() {
-	ResumeDebugging();
-	terminateDebuggee();
+int MyDebuggerCore::SingleStep() {
+	return 0;
 }
 
 int MyDebuggerCore::StartDebugging(TCHAR * debuggeePath, TCHAR * debuggeeCmdParams) {
@@ -247,7 +299,7 @@ int MyDebuggerCore::StartDebugging(TCHAR * debuggeePath, TCHAR * debuggeeCmdPara
 	hBPEvent = CreateEventW(NULL, FALSE, FALSE, NULL);
 
 	try {
-		MainDebugCycleThread = new std::thread(&MyDebuggerCore::DebugCycle, this);
+		mainDebugCycleThread = new std::thread(&MyDebuggerCore::DebugCycle, this);
 	}
 	catch(std::system_error) {
 		DebuggerErrorHandler(DebuggerError::ERR_CANNOT_LAUNCH_DEBUG_CYCLE_THREAD);
@@ -257,5 +309,5 @@ int MyDebuggerCore::StartDebugging(TCHAR * debuggeePath, TCHAR * debuggeeCmdPara
 }
 
 std::thread * MyDebuggerCore::getThread() {
-	return MainDebugCycleThread;
+	return mainDebugCycleThread;
 }

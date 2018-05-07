@@ -64,27 +64,39 @@ public:
 				>> debugeeThreads;
 
 	//Поток, выполняющий основной отладочный цикл
-	std::thread * MainDebugCycleThread;
+	std::thread * mainDebugCycleThread;
 	//Мьютекс для синхронного доступа к интерфейсу
 	std::mutex dcMutex;
 
 	//Принудительное завершение отлаживаемого процесса
 	void terminateDebuggee();
 
+	//Установка точки останова
+	//Параметры:
+	//dwBPAddress - адрес точки останова
 	int SetBreakPoint(DWORD dwBPAddress);
+	//Удаление точки останова
+	//Параметры:
+	//dwBPAddress - адрес точки останова
 	int ClearBreakPoint(DWORD dwBPAddress);
 	//Обработка точки останова (локльная)
+	//Параметры:
+	//stDE - структура DEBUG_EVENT при возникновении DEBUG_EXCEPTION_EVENT с кодом EXCEPTION_BREAKPOINT
 	void BreakPointHandler(DEBUG_EVENT & stDE);
 	//Удалть текущую точку останова
+	//Параметры:
+	//dwBPAddress - адрес точки останова
+	//dwThreadId - ID потока, в котором возникла остановка
 	void ClearCurrentBreakPoint(DWORD dwBPAddress, DWORD dwThreadId);
 
-
+	//Остановить отладку
 	void StopDebugging();
-
 	//Приостановить отладку
 	int PauseDebugging();
-
+	//Продолжить отладку
 	int ResumeDebugging();
+	//Шаг с заходом
+	int SingleStep();
 
 
 	//Основной отладочный цикл
