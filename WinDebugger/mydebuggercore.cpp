@@ -1,5 +1,6 @@
 #include "mydebuggercore.hpp"
 #include "getfilenamefromhandle.hpp"
+#include "symhandler.hpp"
 #include <iostream>
 #include <filesystem>
 #include <DbgHelp.h>
@@ -69,73 +70,25 @@ int MyDebuggerCore::DebugCycle(MyDebuggerCore * debuggingCore) {
 			case CREATE_PROCESS_DEBUG_EVENT: {
 				std::lock_guard<std::mutex>(debuggingCore->dcMutex);
 
-				bRet = SymInitialize(stDE.u.CreateProcessInfo.hProcess, NULL, FALSE);
-				if(bRet == FALSE) {
-					std::cout << "SymInitialize error : " << std::hex << GetLastError() << std::endl;
-				}
-				else {
-					char path[MAX_PATH];
-					memset(path, 0, MAX_PATH);
-					wcstombs(path, debuggingCore->debuggeePath, wcslen(debuggingCore->debuggeePath));
-					DWORD64 dwBase = SymLoadModule64(stDE.u.CreateProcessInfo.hProcess,
-													 NULL,
-													 path,
-													 NULL,
-													 (DWORD64)stDE.u.CreateProcessInfo.lpBaseOfImage,
-													 stDE.u.CreateProcessInfo.nDebugInfoSize);
-					if(dwBase == FALSE) {
-						std::cout << "SymLoadModule64 error : " << GetLastError() << std::endl;
-					}
-					else {
-						std::cout << std::hex << dwBase << std::endl;
-						IMAGEHLP_MODULE64 module_info;
-						module_info.SizeOfStruct = sizeof(module_info);
-						BOOL bSuccess = SymGetModuleInfo64(stDE.u.CreateProcessInfo.hProcess, dwBase, &module_info);
-
-						// Check and notify
-						if (bSuccess && module_info.SymType == SymPdb)
-						{
-							std::cout << "Symbols Loaded." << std::endl;
-							std::vector<SOURCEFILE> sourceFiles;
-							SymEnumSourceFiles(stDE.u.CreateProcessInfo.hProcess, dwBase,
-											   "*.cpp", [](PSOURCEFILE pSourceFile, PVOID args_void) -> BOOL {
-								std::vector<SOURCEFILE> * vector = reinterpret_cast<std::vector<SOURCEFILE> *>(args_void);
-								if(std::experimental::filesystem::exists(std::experimental::filesystem::path(pSourceFile->FileName))) {
-									SOURCEFILE temp;
-									temp.ModBase = pSourceFile->ModBase;
-									int len = strlen(pSourceFile->FileName);
-									temp.FileName = new char[len+1]();
-									memcpy(temp.FileName, pSourceFile->FileName, len);
-									vector->push_back(temp);
-									return TRUE;
-								}
-								return FALSE;
-							}, &sourceFiles);
-							for(SOURCEFILE p : sourceFiles) {
-									std::cout << p.FileName << std::endl;
-							}
-							std::vector<SRCCODEINFO> linesInfo;
-							SymEnumLines(stDE.u.CreateProcessInfo.hProcess, dwBase, NULL,
-										 sourceFiles.begin()->FileName,
-										 [](PSRCCODEINFO LineInfo, PVOID args_void) -> BOOL {
-								std::vector<SRCCODEINFO> * vector = reinterpret_cast<std::vector<SRCCODEINFO> *>(args_void);
-								SRCCODEINFO tmp;
-								memcpy(&tmp, LineInfo, LineInfo->SizeOfStruct);
-								vector->push_back(tmp);
-								return TRUE;
-							}, &linesInfo);
-							std::cout << linesInfo.size() << std::endl;
-						}
-
-						else
-						{
-							std::cout << "No debugging symbols found." << std::endl;
-						}
-					}
-				}
+				char path[MAX_PATH];
+				memset(path, 0, MAX_PATH);
+				wcstombs(path, debuggingCore->debuggeePath, wcslen(debuggingCore->debuggeePath));
+				SymHandler * temp = new SymHandler(stDE.u.CreateProcessInfo.hProcess,
+													NULL,
+													path,
+													NULL,
+													(DWORD64)stDE.u.CreateProcessInfo.lpBaseOfImage,
+													NULL,
+													TRUE);
+				BOOL status = temp->status() == SymHandler::SYM_HANDLER_STATUS::ALL_RIGHT;
+				if(status == TRUE)
+					debuggingCore->modulesSymHandlers.push_back(temp);
+				else
+					delete temp;
 
 				CloseHandle(stDE.u.CreateProcessInfo.hFile);
-				debuggingCore->CreateProcessDebugEventHandler(stDE.u.CreateProcessInfo, stDE.dwProcessId, stDE.dwThreadId);
+				debuggingCore->hProcess = stDE.u.CreateProcessInfo.hProcess;
+				debuggingCore->CreateProcessDebugEventHandler(stDE.u.CreateProcessInfo, stDE.dwProcessId, stDE.dwThreadId, status);
 				dwContinueStatus = DBG_CONTINUE;
 				break;
 			}
@@ -164,13 +117,27 @@ int MyDebuggerCore::DebugCycle(MyDebuggerCore * debuggingCore) {
 
 			case LOAD_DLL_DEBUG_EVENT: {
 				std::lock_guard<std::mutex>(debuggingCore->dcMutex);
-				HANDLE sddf = debuggingCore->piDebuggee.hProcess;
-				TCHAR * aaa;
-				GetFileNameFromHandle(stDE.u.LoadDll.hFile, aaa);
-				DWORD64 dwBase = SymLoadModule64(sddf, NULL, (PCSTR) aaa,
-					 0, (DWORD64)stDE.u.LoadDll.lpBaseOfDll, stDE.u.LoadDll.nDebugInfoSize);
-				std::cout << std::hex << dwBase << ' ';
-				debuggingCore->LoadDllDebugEventHandler(stDE.u.LoadDll, stDE.dwProcessId, stDE.dwThreadId);
+
+
+				TCHAR * out = NULL;
+				GetFileNameFromHandle(stDE.u.LoadDll.hFile, out);
+
+				char path[MAX_PATH];
+				memset(path, 0, MAX_PATH);
+				wcstombs(path, out, wcslen(out));
+				SymHandler * temp = new SymHandler(debuggingCore->hProcess,
+													NULL,
+													path,
+													NULL,
+													(DWORD64)stDE.u.LoadDll.lpBaseOfDll,
+													NULL);
+				BOOL status = temp->status() == SymHandler::SYM_HANDLER_STATUS::ALL_RIGHT;
+				if(status == TRUE)
+					debuggingCore->modulesSymHandlers.push_back(temp);
+				else
+					delete temp;
+
+				debuggingCore->LoadDllDebugEventHandler(stDE.u.LoadDll, stDE.dwProcessId, stDE.dwThreadId, status);
 				dwContinueStatus = DBG_CONTINUE;
 				break;
 			}
